@@ -88,8 +88,10 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
 
 //Envia el bloque minado a todos los nodos
 void broadcast_block(const Block *block){
-  //No enviar a mí mismo
-  //TODO: Completar
+  for(int i = mpi_rank; i < total_nodes; i++){
+    if(i != mpi_rank)
+      MPI_Send(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD);
+  }
 }
 
 //Proof of work
@@ -157,6 +159,9 @@ int node(){
   memset(last_block_in_chain->previous_block_hash,0,HASH_SIZE);
 
   //TODO: Crear thread para minar
+  pthread_t * thread;
+  pthread_create(thread,NULL,proof_of_work,NULL); //no se si va null, pero el ptr en pow no se usa
+
 
   while(true){
 
