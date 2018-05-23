@@ -12,6 +12,7 @@
 int total_nodes, mpi_rank;
 Block *last_block_in_chain;
 map<string,Block> node_blocks;
+pthread_mutex_t broadcast_mutex;
 
 //Cuando me llega una cadena adelantada, y tengo que pedir los nodos que me faltan
 //Si nos separan más de VALIDATION_BLOCKS bloques de distancia entre las cadenas, se descarta por seguridad
@@ -36,7 +37,6 @@ bool verificar_y_migrar_cadena(const Block *rBlock, const MPI_Status *status){
 //Verifica que el bloque tenga que ser incluido en la cadena, y lo agrega si corresponde
 bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
   if(valid_new_block(rBlock)){
-
     //Agrego el bloque al diccionario, aunque no
     //necesariamente eso lo agrega a la cadena
     node_blocks[string(rBlock->block_hash)]=*rBlock;
@@ -78,7 +78,7 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
       //printf("[%d] Perdí la carrera por varios contra %d \n", mpi_rank, status->MPI_SOURCE);
       //bool res = verificar_y_migrar_cadena(rBlock,status);
       //return res;
-
+    
   }
 
   printf("[%d] Error duro: Descarto el bloque recibido de %d porque no es válido \n",mpi_rank,status->MPI_SOURCE);
@@ -88,9 +88,11 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
 
 //Envia el bloque minado a todos los nodos
 void broadcast_block(const Block *block){
-  for(int i = mpi_rank; i < total_nodes; i++){
-    if(i != mpi_rank)
-      MPI_Send(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD);
+  for(int i = mpi_rank + 1; i < total_nodes; i++){
+      MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD);
+  }
+  for(int i = 0; i < mpi_rank; i++){
+      MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD);
   }
 }
 
@@ -128,8 +130,10 @@ void* proof_of_work(void *ptr){
             node_blocks[hash_hex_str] = *last_block_in_chain;
             printf("[%d] Agregué un producido con index %d \n",mpi_rank,last_block_in_chain->index);
 
-            //TODO: Mientras comunico, no responder mensajes de nuevos nodos
+            //Mientras comunico, no responder mensajes de nuevos nodos
+            pthread_mutex_lock(&broadcast_mutex); 
             broadcast_block(last_block_in_chain);
+            pthread_mutex_unlock(&broadcast_mutex); 
           }
       }
 
@@ -158,21 +162,28 @@ int node(){
   last_block_in_chain->created_at = static_cast<unsigned long int> (time(NULL));
   memset(last_block_in_chain->previous_block_hash,0,HASH_SIZE);
 
+
+  //Inicializo el broadcast mutex
+  pthread_mutex_init(broadcast_mutex,NULL);
   //TODO: Crear thread para minar
   pthread_t * thread;
   pthread_create(thread,NULL,proof_of_work,NULL); //no se si va null, pero el ptr en pow no se usa
 
-
+  MPI_Status status;
+  Block *block;
   while(true){
+    MPI_Probe(MPI_ANY_SOURCE,MPI_ANY_TAG,MPI_COMM_WORLD,&status);
+    //TODO: Recibir mensajes de otros nodos
+    if(status.MPI_TAG == TAG_NEW_NODE){
+        MPI_Recv(block,1,*MPI_BLOCK,status.MPI_SOURCE,TAG_NEW_NODE,MPI_COMM_WORLD,&status);
+        pthread_mutex_lock(&broadcast_mutex);  
+        validate_block_for_chain(block, &status);
+        pthread_mutex_unlock(&broadcast_mutex);  
+    }else if(status.MPI_TAG ==TAG_CHAIN_HASH){
 
-      //TODO: Recibir mensajes de otros nodos
+    }else if(status.MPI_TAG ==TAG_CHAIN_RESPONSE){
 
-      //TODO: Si es un mensaje de nuevo bloque, llamar a la función
-      // validate_block_for_chain con el bloque recibido y el estado de MPI
-
-      //TODO: Si es un mensaje de pedido de cadena,
-      //responderlo enviando los bloques correspondientes
-
+    }
   }
 
   delete last_block_in_chain;
