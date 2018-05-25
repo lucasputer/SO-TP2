@@ -1,6 +1,6 @@
 .PHONY : all clean run new
 
-MPIROOT = /usr
+MPIROOT = /usr/local
 
 CFLAGS+= -Wall -std=c++11 -pthread -g $(INCL)
 CC=gcc
