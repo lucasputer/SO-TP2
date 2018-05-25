@@ -14,20 +14,81 @@ Block *last_block_in_chain;
 map<string,Block> node_blocks;
 pthread_mutex_t broadcast_mutex;
 
+void validate_block(Block* block, bool* hash_validation, bool* node_blocks_validation){
+    string hash_hex_str;
+    block_to_hash(block,hash_hex_str);
+
+    if(hash_hex_str != block->block_hash){
+        *hash_validation = false;
+    }
+
+    if(!*node_blocks_validation){
+        *node_blocks_validation = node_blocks.count(string(block->block_hash));
+    }
+}
+
 //Cuando me llega una cadena adelantada, y tengo que pedir los nodos que me faltan
 //Si nos separan más de VALIDATION_BLOCKS bloques de distancia entre las cadenas, se descarta por seguridad
 bool verificar_y_migrar_cadena(const Block *rBlock, const MPI_Status *status){
     //TODO: Enviar mensaje TAG_CHAIN_HASH
 
+    MPI_Send(rBlock->block_hash, 1, *MPI_BLOCK, status->MPI_SOURCE, TAG_CHAIN_HASH, MPI_COMM_WORLD);
+
     Block *blockchain = new Block[VALIDATION_BLOCKS];
 
     //TODO: Recibir mensaje TAG_CHAIN_RESPONSE
+    MPI_Status rec_status;
+    MPI_Recv(blockchain,1,*MPI_BLOCK,status->MPI_SOURCE,TAG_CHAIN_RESPONSE,MPI_COMM_WORLD,&rec_status);
 
     //TODO: Verificar que los bloques recibidos
     //sean válidos y se puedan acoplar a la cadena
-    //delete []blockchain;
-    //return true;
 
+    //El primer bloque de la lista contiene el hash pedido y el mismo index que el bloque original.
+    if(blockchain[0].block_hash != rBlock->block_hash || rBlock->index != blockchain[0].index){
+       printf("[%d] Descarto cadena enviada por %d \n", mpi_rank,status->MPI_SOURCE);
+       delete []blockchain;
+        return false;
+    }
+
+    //El hash del bloque recibido es igual al calculado por la función block_to_hash.
+    //Cada bloque siguiente de la lista, contiene el hash definido en previous_block_hash del actual elemento.
+    //Cada bloque siguiente de la lista, contiene el índice anterior al actual elemento.
+    //algun bloque estaba en el diccionario
+    int i = 0;
+    //creo diff para saber la cantidad de nodos que tengo que recibir
+    //si diff es mas que validation blocks no se que onda.
+    int diff = blockchain[0].index - last_block_in_chain->index;
+
+    Block current = blockchain[i];
+    Block prev = blockchain[i];
+    bool validated = true;
+    bool any_in_node_blocks = false;
+
+    while(i < diff && validated){
+        validate_block(&current, &validated, &any_in_node_blocks);
+        if((i > 0) && (current.block_hash != prev.previous_block_hash || current.index + 1 != prev.index))
+            validated = false;
+        
+        i++;
+        prev = current;
+        current = current = blockchain[i];
+    }
+
+    if(validated && any_in_node_blocks){
+        //migrar
+        i = 0;
+        current = blockchain[i];
+        while(i < diff){
+            node_blocks[string(current.block_hash)] = current;
+            i++;
+            current = blockchain[i];
+        }
+
+        *last_block_in_chain =  blockchain[0];
+
+        delete []blockchain;
+        return true;
+    }
 
     delete []blockchain;
     return false;
