@@ -105,6 +105,7 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
         //y mí último bloque actual tiene índice 0,
         //entonces lo agrego como nuevo último.
         if(rBlock->index == 1 && last_block_in_chain->index == 0){
+            *last_block_in_chain = *rBlock;
             printf("[%d] Agregado a la lista bloque con index %d enviado por %d \n", mpi_rank, rBlock->index,status->MPI_SOURCE);
             return true;
         }else if(last_block_in_chain->index + 1 == rBlock->index ){
@@ -180,7 +181,6 @@ void* proof_of_work(void *ptr){
 
         //Contar la cantidad de ceros iniciales (con el nuevo nonce)
         if(solves_problem(hash_hex_str)){
-            printf("hola");
             //Verifico que no haya cambiado mientras calculaba
             if(last_block_in_chain->index < block.index){
                 mined_blocks += 1;
