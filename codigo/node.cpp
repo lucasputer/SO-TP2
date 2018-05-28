@@ -13,6 +13,8 @@ int total_nodes, mpi_rank;
 Block *last_block_in_chain;
 map<string,Block> node_blocks;
 pthread_mutex_t broadcast_mutex;
+pthread_mutex_t migrate_chain_semaphore;
+bool adding_new_block = false;
 
 void validate_block(Block* block, bool* hash_validation, bool* node_blocks_validation){
     string hash_hex_str;
@@ -31,14 +33,10 @@ void validate_block(Block* block, bool* hash_validation, bool* node_blocks_valid
 //Si nos separan más de VALIDATION_BLOCKS bloques de distancia entre las cadenas, se descarta por seguridad
 bool verificar_y_migrar_cadena(const Block *rBlock, const MPI_Status *status){
     //TODO: Enviar mensaje TAG_CHAIN_HASH
-
-    MPI_Send(rBlock->block_hash, 1, *MPI_BLOCK, status->MPI_SOURCE, TAG_CHAIN_HASH, MPI_COMM_WORLD);
+    MPI_Send(rBlock, 1, *MPI_BLOCK, status->MPI_SOURCE, TAG_CHAIN_HASH, MPI_COMM_WORLD);
+    pthread_mutex_lock(&migrate_chain_semaphore);
 
     Block *blockchain = new Block[VALIDATION_BLOCKS];
-
-    //TODO: Recibir mensaje TAG_CHAIN_RESPONSE
-    MPI_Status rec_status;
-    MPI_Recv(blockchain,1,*MPI_BLOCK,status->MPI_SOURCE,TAG_CHAIN_RESPONSE,MPI_COMM_WORLD,&rec_status);
 
     //TODO: Verificar que los bloques recibidos
     //sean válidos y se puedan acoplar a la cadena
@@ -202,6 +200,28 @@ void* proof_of_work(void *ptr){
     return NULL;
 }
 
+void* build_chain_response(void* ptr) {
+
+    ChainBuildData * data = (ChainBuildData*)(ptr);
+
+    //Construimos la cadena
+    Block block;
+    block.index = 1;
+    MPI_Send(&block, 1, *MPI_BLOCK, data->mpi_source, TAG_CHAIN_RESPONSE, MPI_COMM_WORLD);
+    return 0;
+}
+
+void * add_new_block(void *ptr) {
+    //hay un unico thread ejecutando esta funcion. ASi que el booleano no hace falta que sea atomico
+    adding_new_block = true;
+    NewBlockData* data = (NewBlockData*)(ptr);
+    pthread_mutex_lock(&broadcast_mutex);
+    validate_block_for_chain(&(data->new_block), &(data->status));
+    pthread_mutex_unlock(&broadcast_mutex);
+    adding_new_block = false;
+    return 0;
+
+}
 
 int node(){
 
@@ -224,24 +244,37 @@ int node(){
 
     //Inicializo el broadcast mutex
     pthread_mutex_init(&broadcast_mutex,NULL);
+    pthread_mutex_init(&migrate_chain_semaphore, NULL);
     //Crear thread para minar
-    pthread_t thread;
-    pthread_create(&thread,NULL,proof_of_work,NULL);
-
-    MPI_Status status;
-    Block block;
+    pthread_t mining;
+    pthread_create(&mining,NULL,proof_of_work,NULL);
+    
     while(true){
+        MPI_Status status;
         MPI_Probe(MPI_ANY_SOURCE,MPI_ANY_TAG,MPI_COMM_WORLD,&status);
         //TODO: Recibir mensajes de otros nodos
-        if(status.MPI_TAG == TAG_NEW_BLOCK){
+        if(!adding_new_block && status.MPI_TAG == TAG_NEW_BLOCK){
+            Block block; 
             MPI_Recv(&block,1,*MPI_BLOCK,status.MPI_SOURCE,TAG_NEW_BLOCK,MPI_COMM_WORLD,&status);
-            pthread_mutex_lock(&broadcast_mutex);  
-            validate_block_for_chain(&block, &status);
-            pthread_mutex_unlock(&broadcast_mutex);  
+            pthread_t add_new_block_thread;
+            NewBlockData * data = new NewBlockData;
+            data->new_block = block;
+            data->status = status;
+            pthread_create(&add_new_block_thread, NULL, add_new_block, (void*)(data));
+            //no hago join. Xq no quiero bloquear el loop. Ya que quiero seguir escuchando mensajes
         }else if(status.MPI_TAG ==TAG_CHAIN_HASH){
-
+            Block requested_block_hash;
+            MPI_Recv(&requested_block_hash,1,*MPI_BLOCK,status.MPI_SOURCE,TAG_CHAIN_HASH,MPI_COMM_WORLD, &status);
+            ChainBuildData * data = new ChainBuildData;
+            data->block_hash = requested_block_hash.block_hash;
+            data->mpi_source = status.MPI_SOURCE;
+            pthread_t build_chain;
+            pthread_create(&build_chain,NULL,build_chain_response,(void*)(data));
+            //no hago join. Xq no quiero bloquear el loop. Ya que quiero seguir escuchando mensajes
         }else if(status.MPI_TAG ==TAG_CHAIN_RESPONSE){
-
+            //copiar de la respuesta la blockchain a la variable global blockchain y 
+            //hacer un unlock del mutex para el thread que esta añadiendo el bloque    
+            pthread_mutex_unlock(&migrate_chain_semaphore);
         }
     }
 
@@ -249,3 +282,4 @@ int node(){
     delete last_block_in_chain;
     return 0;
 }
+

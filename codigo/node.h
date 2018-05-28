@@ -9,6 +9,16 @@
 #define TAG_CHAIN_RESPONSE 22
 #define MAX_BLOCKS 200
 
+struct ChainBuildData{
+    string block_hash;
+    int mpi_source;
+};
+
+struct NewBlockData {
+    Block new_block;
+    MPI_Status status;
+};
+
 extern MPI_Datatype* MPI_BLOCK;
 
 void broadcast_block(const Block *block);
