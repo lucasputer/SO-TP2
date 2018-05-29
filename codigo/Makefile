@@ -21,4 +21,4 @@ clean:
 new: clean all
 
 run: blockchain
-	mpirun -np 4 ./blockchain
+	mpirun -np 4 --hostfile hostfile ./blockchain
