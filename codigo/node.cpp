@@ -8,14 +8,15 @@
 #include <atomic>
 #include <mpi.h>
 #include <map>
+#include <chrono>
+#include <thread>
 
 int total_nodes, mpi_rank;
 Block *last_block_in_chain;
 map<string,Block> node_blocks;
-pthread_mutex_t broadcast_mutex;
-pthread_mutex_t migrate_chain_semaphore;
-bool adding_new_block = false;
-bool waiting_for_chain = true;
+pthread_mutex_t general_mutex;
+pthread_mutex_t migrate_chain_mutex;
+
 Block blockchain[VALIDATION_BLOCKS];
 
 void validate_block(Block* block, bool* hash_validation, bool* node_blocks_validation){
@@ -34,15 +35,13 @@ void validate_block(Block* block, bool* hash_validation, bool* node_blocks_valid
 //Cuando me llega una cadena adelantada, y tengo que pedir los nodos que me faltan
 //Si nos separan más de VALIDATION_BLOCKS bloques de distancia entre las cadenas, se descarta por seguridad
 bool verificar_y_migrar_cadena(const Block *rBlock, const MPI_Status *status){
-    //TODO: Enviar mensaje TAG_CHAIN_HASH
-    waiting_for_chain = true;
+    pthread_mutex_lock(&migrate_chain_mutex);
     printf("[%d] Pidiendo cadena a %d con index %d \n",mpi_rank,status->MPI_SOURCE, rBlock->index);
     MPI_Send(rBlock, 1, *MPI_BLOCK, status->MPI_SOURCE, TAG_CHAIN_HASH, MPI_COMM_WORLD);
     printf("[%d] Pedí cadena a %d con index %d \n",mpi_rank,status->MPI_SOURCE, rBlock->index);
-    //pthread_mutex_lock(&migrate_chain_semaphore);
-    while(waiting_for_chain){
-        //printf("[%d] Esperando la cadena que le pedi a %d con index %d \n",mpi_rank,status->MPI_SOURCE, rBlock->index);
-    }
+    pthread_mutex_lock(&migrate_chain_mutex);
+    pthread_mutex_unlock(&migrate_chain_mutex);
+
     printf("[%d] Recibí la cadena enviada por %d \n",mpi_rank,status->MPI_SOURCE);
     //TODO: Verificar que los bloques recibidos
     //sean válidos y se puedan acoplar a la cadena
@@ -193,7 +192,7 @@ void* proof_of_work(void *ptr){
         //Contar la cantidad de ceros iniciales (con el nuevo nonce)
         if(solves_problem(hash_hex_str)){
             //Verifico que no haya cambiado mientras calculaba
-            
+            pthread_mutex_lock(&general_mutex);
             if(last_block_in_chain->index < block.index){
                 
                 mined_blocks += 1;
@@ -203,9 +202,8 @@ void* proof_of_work(void *ptr){
                 node_blocks[hash_hex_str] = *last_block_in_chain;
                 printf("[%d] Agregué un bloque producido con index %d \n",mpi_rank,last_block_in_chain->index);
                 //Mientras comunico, no responder mensajes de nuevos nodos
-                pthread_mutex_lock(&broadcast_mutex);
                 broadcast_block(last_block_in_chain);
-                pthread_mutex_unlock(&broadcast_mutex);
+                pthread_mutex_unlock(&general_mutex);
             }
             
         }
@@ -238,12 +236,10 @@ void* build_chain_response(void* ptr) {
 
 void * add_new_block(void *ptr) {
     //hay un unico thread ejecutando esta funcion. ASi que el booleano no hace falta que sea atomico
-    adding_new_block = true;
     NewBlockData* data = (NewBlockData*)(ptr);
-    pthread_mutex_lock(&broadcast_mutex);
+    pthread_mutex_lock(&general_mutex);
     validate_block_for_chain(&(data->new_block), &(data->status));
-    pthread_mutex_unlock(&broadcast_mutex);
-    adding_new_block = false;
+    pthread_mutex_unlock(&general_mutex);
     return 0;
 
 }
@@ -268,8 +264,8 @@ int node(){
     memset(last_block_in_chain->previous_block_hash,0,HASH_SIZE);
 
     //Inicializo el broadcast mutex
-    pthread_mutex_init(&broadcast_mutex,NULL);
-    pthread_mutex_init(&migrate_chain_semaphore, NULL);
+    pthread_mutex_init(&general_mutex,NULL);
+    pthread_mutex_init(&migrate_chain_mutex,NULL);
     //Crear thread para minar
     pthread_t mining;
     pthread_create(&mining,NULL,proof_of_work,NULL);
@@ -278,7 +274,7 @@ int node(){
         MPI_Status status;
         MPI_Probe(MPI_ANY_SOURCE,MPI_ANY_TAG,MPI_COMM_WORLD,&status);
         //TODO: Recibir mensajes de otros nodos
-        if(!adding_new_block && status.MPI_TAG == TAG_NEW_BLOCK){
+        if(status.MPI_TAG == TAG_NEW_BLOCK){
             Block block; 
             MPI_Recv(&block,1,*MPI_BLOCK,status.MPI_SOURCE,TAG_NEW_BLOCK,MPI_COMM_WORLD,&status);
             printf("--- [%d] Recibí de %d un bloque con index %d \n",mpi_rank,status.MPI_SOURCE,block.index);
@@ -306,8 +302,7 @@ int node(){
             MPI_Status recv_status;
             MPI_Recv(blockchain,VALIDATION_BLOCKS,*MPI_BLOCK,status.MPI_SOURCE,TAG_CHAIN_RESPONSE,MPI_COMM_WORLD, &recv_status);
             printf("--- [%d] Desbloqueo thread agregando nodo  ... de %d \n",mpi_rank,status.MPI_SOURCE);
-            //pthread_mutex_unlock(&migrate_chain_semaphore);
-            waiting_for_chain = false;
+            pthread_mutex_unlock(&migrate_chain_mutex);
             printf("--- [%d] Copiando cadena de %d \n",mpi_rank,status.MPI_SOURCE);
         }
     }
