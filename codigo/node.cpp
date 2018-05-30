@@ -15,6 +15,7 @@ map<string,Block> node_blocks;
 pthread_mutex_t broadcast_mutex;
 pthread_mutex_t migrate_chain_semaphore;
 bool adding_new_block = false;
+bool building_chain = false;
 bool waiting_for_chain = true;
 Block blockchain[VALIDATION_BLOCKS];
 
@@ -194,7 +195,7 @@ void* proof_of_work(void *ptr){
         if(solves_problem(hash_hex_str)){
             //Verifico que no haya cambiado mientras calculaba
             
-            if(last_block_in_chain->index < block.index){
+            if(!adding_new_block && last_block_in_chain->index < block.index){
                 
                 mined_blocks += 1;
                 *last_block_in_chain = block;
@@ -219,9 +220,11 @@ void* build_chain_response(void* ptr) {
 
     ChainBuildData * data = (ChainBuildData*)(ptr);
     Block blockchain_local[VALIDATION_BLOCKS];
-
+    building_chain = true;
     //Construimos la cadena
+    printf("[%d] Construyendo la cadena pedida por %d\n",mpi_rank,data->mpi_source);
     string block_hash =  data->block_hash;
+
     blockchain_local[0] = node_blocks.find(block_hash)->second;
     int i = 1;
     Block current_block;
@@ -233,6 +236,7 @@ void* build_chain_response(void* ptr) {
     }
     printf("[%d] Envío la cadena pedida por %d con tamano %d\n",mpi_rank,data->mpi_source,i);
     MPI_Send(&blockchain_local, i, *MPI_BLOCK, data->mpi_source, TAG_CHAIN_RESPONSE, MPI_COMM_WORLD);
+    building_chain = false;
     return 0;
 }
 
@@ -288,7 +292,7 @@ int node(){
             data->status = status;
             pthread_create(&add_new_block_thread, NULL, add_new_block, (void*)(data));
             //no hago join. Xq no quiero bloquear el loop. Ya que quiero seguir escuchando mensajes
-        }else if(status.MPI_TAG ==TAG_CHAIN_HASH){
+        }else if(!building_chain && status.MPI_TAG ==TAG_CHAIN_HASH){
             Block requested_block_hash;
             MPI_Recv(&requested_block_hash,1,*MPI_BLOCK,status.MPI_SOURCE,TAG_CHAIN_HASH,MPI_COMM_WORLD, &status);
             printf("--- [%d] Recibí pedido de cadena de %d con index %d \n",mpi_rank,status.MPI_SOURCE,requested_block_hash.index);
