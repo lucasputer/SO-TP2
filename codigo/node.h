@@ -7,7 +7,10 @@
 #define TAG_NEW_BLOCK 10
 #define TAG_CHAIN_HASH 21
 #define TAG_CHAIN_RESPONSE 22
+#define TAG_FINISHED 23
+
 #define MAX_BLOCKS 200
+
 
 struct ChainBuildData{
     string block_hash;

@@ -16,6 +16,8 @@ Block *last_block_in_chain;
 map<string,Block> node_blocks;
 pthread_mutex_t general_mutex;
 pthread_mutex_t migrate_chain_mutex;
+int finished_nodes = 0;
+int i_have_finished = false;
 
 Block blockchain[VALIDATION_BLOCKS];
 
@@ -30,6 +32,30 @@ void validate_block(Block* block, bool* hash_validation, bool* node_blocks_valid
     if(!*node_blocks_validation){
         *node_blocks_validation = node_blocks.count(string(block->block_hash));
     }
+}
+
+//Envia el bloque minado a todos los nodos
+void broadcast_block(const Block *block){
+    MPI_Request m;
+    for(int i = mpi_rank + 1; i < total_nodes; i++){
+        MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD,&m);
+    }
+    for(int i = 0; i < mpi_rank; i++){
+        MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD,&m);
+    }
+    printf("[%d] Broadcast de mi producido con index %d \n", mpi_rank, block->index);
+}
+
+void broadcast_finished(){
+    MPI_Request m;
+    int j =0;
+    for(int i = mpi_rank + 1; i < total_nodes; i++){
+        MPI_Isend(&j, 1, MPI_INT, i, TAG_FINISHED, MPI_COMM_WORLD,&m);
+    }
+    for(int i = 0; i < mpi_rank; i++){
+        MPI_Isend(&j, 1, MPI_INT, i, TAG_FINISHED, MPI_COMM_WORLD,&m);
+    }
+    printf("[%d] Broadcast de que termine\n", mpi_rank);
 }
 
 //Cuando me llega una cadena adelantada, y tengo que pedir los nodos que me faltan
@@ -90,6 +116,8 @@ bool verificar_y_migrar_cadena(const Block *rBlock, const MPI_Status *status){
         }
 
         *last_block_in_chain =  blockchain[0];
+        if(blockchain[0].index == MAX_BLOCKS)
+            broadcast_finished();
 
         printf("[%d] Acepté cadena enviada por %d mi nuevo index es %d\n", mpi_rank,status->MPI_SOURCE, last_block_in_chain->index);
 
@@ -113,6 +141,8 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
         if(rBlock->index == 1 && last_block_in_chain->index == 0){
             *last_block_in_chain = *rBlock;
             printf("[%d] Agregado a la lista bloque con index %d enviado por %d \n", mpi_rank, rBlock->index,status->MPI_SOURCE);
+            if(rBlock->index == MAX_BLOCKS)
+                    broadcast_finished();
             return true;
         }else if(last_block_in_chain->index + 1 == rBlock->index ){
             //chequear si esto esta bien o hay que hacerlo con block_to_hash
@@ -125,6 +155,8 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
                 //entonces lo agrego como nuevo último.
                 printf("[%d] Agregado a la lista bloque con index %d enviado por %d \n", mpi_rank, last_block_in_chain->index,status->MPI_SOURCE);
                 *last_block_in_chain = *rBlock;
+                if(rBlock->index == MAX_BLOCKS)
+                    broadcast_finished();
                 return true;
             }else{
                 //Si el índice del bloque recibido es
@@ -154,26 +186,13 @@ bool validate_block_for_chain(const Block *rBlock, const MPI_Status *status){
     return false;
 }
 
-
-//Envia el bloque minado a todos los nodos
-void broadcast_block(const Block *block){
-    MPI_Request m;
-    for(int i = mpi_rank + 1; i < total_nodes; i++){
-        MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD,&m);
-    }
-    for(int i = 0; i < mpi_rank; i++){
-        MPI_Isend(block, 1, *MPI_BLOCK, i, TAG_NEW_BLOCK, MPI_COMM_WORLD,&m);
-    }
-    printf("[%d] Broadcast de mi producido con index %d \n", mpi_rank, block->index);
-}
-
 //Proof of work
 //TODO: Advertencia: puede tener condiciones de carrera
 void* proof_of_work(void *ptr){
     string hash_hex_str;
     Block block;
     unsigned int mined_blocks = 0;
-    while(true){
+    while(!i_have_finished){
         block = *last_block_in_chain;
 
         //Preparar nuevo bloque
@@ -202,6 +221,13 @@ void* proof_of_work(void *ptr){
                 node_blocks[hash_hex_str] = *last_block_in_chain;
                 printf("[%d] Agregué un bloque producido con index %d \n",mpi_rank,last_block_in_chain->index);
                 //Mientras comunico, no responder mensajes de nuevos nodos
+                if(block.index == MAX_BLOCKS){
+                    printf("chau");
+                    i_have_finished = true;
+                    finished_nodes++;
+                    broadcast_finished();
+                }
+
                 broadcast_block(last_block_in_chain);
                 pthread_mutex_unlock(&general_mutex);
             }
@@ -209,7 +235,7 @@ void* proof_of_work(void *ptr){
         }
 
     }
-
+    printf("[%d] Termine de minar \n", mpi_rank);
     return NULL;
 }
 
@@ -270,7 +296,7 @@ int node(){
     pthread_t mining;
     pthread_create(&mining,NULL,proof_of_work,NULL);
     
-    while(true){
+    while(finished_nodes < total_nodes){
         MPI_Status status;
         MPI_Probe(MPI_ANY_SOURCE,MPI_ANY_TAG,MPI_COMM_WORLD,&status);
         //TODO: Recibir mensajes de otros nodos
@@ -304,10 +330,12 @@ int node(){
             printf("--- [%d] Desbloqueo thread agregando nodo  ... de %d \n",mpi_rank,status.MPI_SOURCE);
             pthread_mutex_unlock(&migrate_chain_mutex);
             printf("--- [%d] Copiando cadena de %d \n",mpi_rank,status.MPI_SOURCE);
+        }else if(status.MPI_TAG == TAG_FINISHED){
+            finished_nodes++;
         }
     }
-
-    //TODO: joinear el thread
+    MPI_Barrier(MPI_COMM_WORLD);
+    printf("[%d] Termine mi ejecucion \n", mpi_rank);
     delete last_block_in_chain;
     return 0;
 }
