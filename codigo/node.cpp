@@ -48,6 +48,8 @@ void broadcast_block(const Block *block){
 
 void broadcast_finished(){
     MPI_Request m;
+    i_have_finished = true;
+    finished_nodes++;
     int j =0;
     for(int i = mpi_rank + 1; i < total_nodes; i++){
         MPI_Isend(&j, 1, MPI_INT, i, TAG_FINISHED, MPI_COMM_WORLD,&m);
@@ -222,9 +224,6 @@ void* proof_of_work(void *ptr){
                 printf("[%d] Agregué un bloque producido con index %d \n",mpi_rank,last_block_in_chain->index);
                 //Mientras comunico, no responder mensajes de nuevos nodos
                 if(block.index == MAX_BLOCKS){
-                    printf("chau");
-                    i_have_finished = true;
-                    finished_nodes++;
                     broadcast_finished();
                 }
 
@@ -331,7 +330,9 @@ int node(){
             pthread_mutex_unlock(&migrate_chain_mutex);
             printf("--- [%d] Copiando cadena de %d \n",mpi_rank,status.MPI_SOURCE);
         }else if(status.MPI_TAG == TAG_FINISHED){
+            pthread_mutex_lock(&general_mutex);
             finished_nodes++;
+            pthread_mutex_unlock(&general_mutex);
         }
     }
     MPI_Barrier(MPI_COMM_WORLD);
