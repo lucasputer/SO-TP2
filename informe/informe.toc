@@ -1,0 +1,8 @@
+\select@language {spanish}
+\contentsline {subsection}{\numberline {0.1}Introducci\IeC {\'o}n}{3}
+\contentsline {subsection}{\numberline {0.2}Minado}{3}
+\contentsline {subsection}{\numberline {0.3}Recepci\IeC {\'o}n de Mensajes}{3}
+\contentsline {subsubsection}{\numberline {0.3.1}Nuevo Nodo}{3}
+\contentsline {subsubsection}{\numberline {0.3.2}Pedido de cadena}{4}
+\contentsline {subsubsection}{\numberline {0.3.3}Recepci\IeC {\'o}n de Cadena}{4}
+\contentsline {subsubsection}{\numberline {0.3.4}Finalizaci\IeC {\'o}n}{5}
