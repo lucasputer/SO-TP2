@@ -3,7 +3,11 @@
 
 #define HASH_SIZE 256
 #define NONCE_SIZE 10
+<<<<<<< HEAD
 #define DEFAULT_DIFFICULTY 12
+=======
+#define DEFAULT_DIFFICULTY 15
+>>>>>>> fff72f4e4409df1f29ab3a82fbc29c7cd863d4be
 #define BLOCKS_TO_MINE 10
 #define VALIDATION_MINUTES 1
 #define VALIDATION_BLOCKS 5
